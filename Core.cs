@@ -115,15 +115,39 @@ public static class Core
         File.WriteAllBytes(filePath, data);
     }
 
+    public static void DeHoge(byte[] data, int hogeInt = 0x7B)
+    {
+        if (data == null || data.Length == 0) return;
+
+        // 已是明文就跳過
+        if (data.Length >= 5 && data[0] == (byte)'U' && data[1] == (byte)'n' &&
+            data[2] == (byte)'i' && data[3] == (byte)'t' && data[4] == (byte)'y')
+            return;
+        if (data[0] == (byte)'{')
+            return;
+
+        byte key = (byte)(hogeInt + data.Length);
+        if (key == 0)
+            key = (byte)hogeInt;
+
+        int n = Math.Min(0x31, data.Length); // 含 index 0x30
+        for (int i = 0; i < n; i++)
+            data[i] ^= key;
+    }
+
     // __grd / scene__: 前 0x30 bytes XOR (data[0] ^ 0x55)
     public static void XorDecryptAsset(string filePath)
     {
         byte[] data = File.ReadAllBytes(filePath);
         if (data.Length == 0) return;
-        byte key = (byte)(data[0] ^ 0x55);
-        int xorCount = Math.Min(0x30, data.Length);
-        for (int i = 0; i < xorCount; i++)
-            data[i] ^= key;
+
+        // 已是明文就跳過
+        if (data.Length >= 7 && data[0] == (byte)'U' && data[1] == (byte)'n')
+            return;
+        if (data.Length >= 1 && data[0] == (byte)'{')
+            return;
+
+        DeHoge(data, hogeInt: 0x7B);
         File.WriteAllBytes(filePath, data);
     }
 
