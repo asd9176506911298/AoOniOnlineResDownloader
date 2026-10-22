@@ -33,7 +33,6 @@ public class MainForm : Form
         Width = 980;
         Height = 760;
 
-        // Load saved language first
         AppSettings.Load();
         Loc.SetLanguage(AppSettings.Language);
 
@@ -42,13 +41,12 @@ public class MainForm : Form
             Loc.T("Lang_ZH"),
             Loc.T("Lang_EN")
         });
-        // set index without firing event yet
         _suppressLangEvent = true;
         cmbLanguage.SelectedIndex = AppSettings.Language switch
         {
             AppLanguage.Japanese => 0,
             AppLanguage.English => 2,
-            _ => 1   // TraditionalChinese
+            _ => 1
         };
         _suppressLangEvent = false;
 
@@ -63,7 +61,7 @@ public class MainForm : Form
             };
             Loc.SetLanguage(lang);
             AppSettings.Language = lang;
-            AppSettings.Save();          // ← 立刻寫入磁碟
+            AppSettings.Save();
             ApplyLanguage();
         };
 
@@ -148,14 +146,27 @@ public class MainForm : Form
         try
         {
             btnCatalog.Enabled = false;
-            Log(Loc.Tf("Log_DownloadingCatalog", v.AndroidRes));
             string dir = Path.Combine(txtOut.Text, v.AndroidRes);
+
+            Log(Loc.Tf("Log_DownloadingCatalog", v.AndroidRes));
             byte[] cat = await Core.FetchCatalogAsync(v.AndroidRes, dir);
-            allBundles = Core.ParseBundleNames(cat);
+            var addrList = Core.ParseBundleNames(cat);
+            Log(Loc.Tf("Log_CatalogDone", addrList.Count));
+
+            List<string> grList = new();
+            try
+            {
+                grList = await Core.FetchAndParseGrMapAsync(v.AndroidRes, dir, Log);
+            }
+            catch (Exception gex)
+            {
+                Log(Loc.Tf("Log_GrMapFailed", gex.Message));
+            }
+
+            allBundles = addrList.Concat(grList).ToList();
             loadedVersion = v;
             ApplyFilter();
             btnDownload.Enabled = btnDownloadAll.Enabled = allBundles.Count > 0;
-            Log(Loc.Tf("Log_CatalogDone", allBundles.Count));
         }
         catch (Exception ex) { Log(Loc.Tf("Log_CatalogFailed", ex.Message)); }
         finally { btnCatalog.Enabled = true; }
@@ -185,23 +196,28 @@ public class MainForm : Form
         if (loadedVersion is not { } v) return;
         var names = (all ? lstBundles.Items.Cast<string>() : lstBundles.SelectedItems.Cast<string>()).ToList();
         if (names.Count == 0) return;
-        string outDir = Path.Combine(txtOut.Text, v.AndroidRes, "Addressables");
+
+        string outAddr = Path.Combine(txtOut.Text, v.AndroidRes, "Addressables");
+        string outOld = Path.Combine(txtOut.Text, v.AndroidRes, "AssetBundles");
+
         cts = new CancellationTokenSource();
         btnDownload.Enabled = btnDownloadAll.Enabled = false;
         btnCancel.Enabled = true;
         btnCatalog.Enabled = false;
         bar.Maximum = names.Count;
         bar.Value = 0;
+
         var fallback = ((List<ResourceVersion>)cmbVersion.DataSource!)
             .Where(x => x.Id < v.Id).OrderByDescending(x => x.Id)
             .Select(x => x.AndroidRes).Where(r => r != v.AndroidRes).Distinct()
-            .Select(Core.AddressablesUrl).ToList();
-        Log(Loc.Tf("Log_StartDownload", names.Count, outDir));
+            .ToList();
+
+        Log(Loc.Tf("Log_StartDownload", names.Count, outAddr + " / " + outOld));
         try
         {
             var progress = new Progress<int>(n => { bar.Value = Math.Min(n, bar.Maximum); });
             var (ok, skipped, failed) = await Core.DownloadBundlesAsync(
-                names, Core.AddressablesUrl(v.AndroidRes), fallback, outDir,
+                names, v.AndroidRes, fallback, outAddr, outOld,
                 (int)numParallel.Value, progress, Log, cts.Token);
             Log(Loc.Tf("Log_DownloadDone", ok, skipped, failed));
         }

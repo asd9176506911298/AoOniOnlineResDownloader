@@ -13,8 +13,10 @@ public static class Core
 {
     public const string BaseUrl = "https://diz1jo2c4y7pn.cloudfront.net/prd/";
     public static string AddressablesUrl(string resVersion) => $"{BaseUrl}res/{resVersion}/Android/Addressables/";
+    public static string AndroidRootUrl(string resVersion) => $"{BaseUrl}res/{resVersion}/Android/";
     public static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
     static readonly Regex BundleRx = new(@"[A-Za-z0-9_.\-]+_assets_all_[0-9a-f]{32}\.bundle", RegexOptions.Compiled);
+    static readonly Regex GrMapEntryRx = new(@"\""([^\""]+)\""\s*:\s*\""([0-9A-Fa-f]+),(\d+)\""", RegexOptions.Compiled);
 
     public static async Task<List<ResourceVersion>> FetchVersionsAsync(Action<string> log)
     {
@@ -102,25 +104,89 @@ public static class Core
         return BundleRx.Matches(text).Select(m => m.Value).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
     }
 
-    public static async Task<(int ok, int skipped, int failed)> DownloadBundlesAsync(
-        IReadOnlyList<string> names, string baseUrl, IReadOnlyList<string> fallbackBaseUrls, string outDir, int parallel,
-        IProgress<int> progress, Action<string> log, CancellationToken ct)
+    // GRMap: «e 0x31 bytes XOR ©T©w key 0x69
+    public static void XorDecryptGrMap(string filePath)
     {
-        Directory.CreateDirectory(outDir);
+        byte[] data = File.ReadAllBytes(filePath);
+        if (data.Length == 0) return;
+        int xorCount = Math.Min(0x31, data.Length);
+        for (int i = 0; i < xorCount; i++)
+            data[i] ^= 0x69;
+        File.WriteAllBytes(filePath, data);
+    }
+
+    // __grd / scene__: «e 0x30 bytes XOR (data[0] ^ 0x55)
+    public static void XorDecryptAsset(string filePath)
+    {
+        byte[] data = File.ReadAllBytes(filePath);
+        if (data.Length == 0) return;
+        byte key = (byte)(data[0] ^ 0x55);
+        int xorCount = Math.Min(0x30, data.Length);
+        for (int i = 0; i < xorCount; i++)
+            data[i] ^= key;
+        File.WriteAllBytes(filePath, data);
+    }
+
+    public static async Task<List<string>> FetchAndParseGrMapAsync(string resVersion, string saveDir, Action<string> log)
+    {
+        string url = AndroidRootUrl(resVersion) + "GRMap";
+        log(Loc.Tf("Log_DownloadingGrMap", url));
+        Directory.CreateDirectory(saveDir);
+        string dest = Path.Combine(saveDir, "GRMap");
+        byte[] data = await Http.GetByteArrayAsync(url).ConfigureAwait(false);
+        await File.WriteAllBytesAsync(dest, data).ConfigureAwait(false);
+        XorDecryptGrMap(dest);
+
+        data = await File.ReadAllBytesAsync(dest).ConfigureAwait(false);
+        string text = Encoding.Latin1.GetString(data);
+        var names = GrMapEntryRx.Matches(text)
+            .Select(m => m.Groups[1].Value)
+            .Distinct()
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .ToList();
+        log(Loc.Tf("Log_GrMapDone", names.Count, dest));
+        return names;
+    }
+
+    static bool IsOldSystemAsset(string name) =>
+        name.EndsWith("__grd", StringComparison.OrdinalIgnoreCase)
+        || name.StartsWith("scene__", StringComparison.OrdinalIgnoreCase);
+
+    public static async Task<(int ok, int skipped, int failed)> DownloadBundlesAsync(
+        IReadOnlyList<string> names, string resVersion,
+        IReadOnlyList<string> fallbackResVersions, string outDirAddressables, string outDirOld,
+        int parallel, IProgress<int> progress, Action<string> log, CancellationToken ct)
+    {
+        Directory.CreateDirectory(outDirAddressables);
+        Directory.CreateDirectory(outDirOld);
+        string addrBase = AddressablesUrl(resVersion);
+        string oldBase = AndroidRootUrl(resVersion);
+        var fallbackAddr = fallbackResVersions.Select(AddressablesUrl).ToList();
+        var fallbackOld = fallbackResVersions.Select(AndroidRootUrl).ToList();
+
         int ok = 0, skipped = 0, failed = 0, done = 0;
         await Parallel.ForEachAsync(names,
             new ParallelOptions { MaxDegreeOfParallelism = parallel, CancellationToken = ct },
             async (name, token) =>
             {
-                string dest = Path.Combine(outDir, name);
+                bool isOld = IsOldSystemAsset(name);
+                string outDir = isOld ? outDirOld : outDirAddressables;
+                string dest = Path.Combine(outDir, name.Replace('/', Path.DirectorySeparatorChar));
                 try
                 {
                     if (File.Exists(dest)) { Interlocked.Increment(ref skipped); return; }
+                    string? dir = Path.GetDirectoryName(dest);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+                    string primaryBase = isOld ? oldBase : addrBase;
+                    var fallbacks = isOld ? fallbackOld : fallbackAddr;
+                    string urlName = string.Join("/", name.Split('/').Select(Uri.EscapeDataString));
+
                     HttpResponseMessage? resp = null;
                     string? usedBase = null;
-                    foreach (var b in new[] { baseUrl }.Concat(fallbackBaseUrls))
+                    foreach (var b in new[] { primaryBase }.Concat(fallbacks))
                     {
-                        var r = await Http.GetAsync(b + name, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+                        var r = await Http.GetAsync(b + urlName, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
                         if (r.IsSuccessStatusCode) { resp = r; usedBase = b; break; }
                         r.Dispose();
                     }
@@ -130,7 +196,7 @@ public static class Core
                         log(Loc.Tf("Log_FailAllVersions", name));
                         return;
                     }
-                    if (usedBase != baseUrl) log(Loc.Tf("Log_FromOldDir", name, usedBase));
+                    if (usedBase != primaryBase) log(Loc.Tf("Log_FromOldDir", name, usedBase!));
                     using (resp)
                     {
                         string tmp = dest + ".tmp";
@@ -139,6 +205,13 @@ public static class Core
                             await src.CopyToAsync(fs, token).ConfigureAwait(false);
                         File.Move(tmp, dest, true);
                     }
+
+                    if (isOld)
+                    {
+                        try { XorDecryptAsset(dest); }
+                        catch (Exception dex) { log(Loc.Tf("Log_DecryptError", name, dex.Message)); }
+                    }
+
                     Interlocked.Increment(ref ok);
                 }
                 catch (OperationCanceledException) { throw; }

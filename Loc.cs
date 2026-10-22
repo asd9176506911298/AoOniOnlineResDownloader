@@ -1,11 +1,5 @@
-﻿using System.IO.Compression;
-using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
+﻿namespace AoOniOnlineResDownloader;
 
-namespace AoOniOnlineResDownloader;
-
-// ===================== Localization =====================
 public enum AppLanguage { Japanese, TraditionalChinese, English }
 
 public static class Loc
@@ -33,8 +27,11 @@ public static class Loc
             ["Log_GotVersions"] = "取得 {0} 個版本",
             ["Log_FetchVersionsFailed"] = "取得版本失敗：{0}",
             ["Log_DownloadingCatalog"] = "下載 catalog：{0}",
-            ["Log_CatalogDone"] = "catalog 解析完成：{0} 個 bundle",
+            ["Log_CatalogDone"] = "catalog 解析完成：{0} 個 Addressables bundle",
             ["Log_CatalogFailed"] = "載入 catalog 失敗：{0}",
+            ["Log_DownloadingGrMap"] = "下載 GRMap：{0}",
+            ["Log_GrMapDone"] = "GRMap 解析完成：{0} 個舊資源，已 XOR 解密並存到 {1}",
+            ["Log_GrMapFailed"] = "GRMap 下載/解析失敗：{0}",
             ["Log_StartDownload"] = "開始下載 {0} 個到 {1}",
             ["Log_DownloadDone"] = "完成：成功 {0}，已存在略過 {1}，失敗 {2}",
             ["Log_Cancelled"] = "已取消",
@@ -42,6 +39,7 @@ public static class Loc
             ["Log_FailAllVersions"] = "失敗（所有版本目錄都找不到）：{0}",
             ["Log_FromOldDir"] = "從舊目錄取得：{0}  <- {1}",
             ["Log_Error"] = "錯誤 {0}：{1}",
+            ["Log_DecryptError"] = "解密失敗 {0}：{1}",
             ["Lang_JP"] = "日本語",
             ["Lang_ZH"] = "繁體中文",
             ["Lang_EN"] = "English",
@@ -65,8 +63,11 @@ public static class Loc
             ["Log_GotVersions"] = "{0} 個のバージョンを取得しました",
             ["Log_FetchVersionsFailed"] = "バージョン取得失敗：{0}",
             ["Log_DownloadingCatalog"] = "catalogをダウンロード中：{0}",
-            ["Log_CatalogDone"] = "catalog解析完了：{0} 個のbundle",
+            ["Log_CatalogDone"] = "catalog解析完了：{0} 個のAddressables bundle",
             ["Log_CatalogFailed"] = "catalog読込失敗：{0}",
+            ["Log_DownloadingGrMap"] = "GRMapをダウンロード中：{0}",
+            ["Log_GrMapDone"] = "GRMap解析完了：{0} 個の旧リソース、XOR復号して {1} に保存",
+            ["Log_GrMapFailed"] = "GRMapダウンロード/解析失敗：{0}",
             ["Log_StartDownload"] = "{0} 個を {1} にダウンロード開始",
             ["Log_DownloadDone"] = "完了：成功 {0}、既存スキップ {1}、失敗 {2}",
             ["Log_Cancelled"] = "キャンセルしました",
@@ -74,6 +75,7 @@ public static class Loc
             ["Log_FailAllVersions"] = "失敗（全バージョンのディレクトリに見つかりません）：{0}",
             ["Log_FromOldDir"] = "旧ディレクトリから取得：{0}  <- {1}",
             ["Log_Error"] = "エラー {0}：{1}",
+            ["Log_DecryptError"] = "復号失敗 {0}：{1}",
             ["Lang_JP"] = "日本語",
             ["Lang_ZH"] = "繁體中文",
             ["Lang_EN"] = "English",
@@ -97,8 +99,11 @@ public static class Loc
             ["Log_GotVersions"] = "Got {0} versions",
             ["Log_FetchVersionsFailed"] = "Failed to fetch versions: {0}",
             ["Log_DownloadingCatalog"] = "Downloading catalog: {0}",
-            ["Log_CatalogDone"] = "Catalog parsed: {0} bundles",
+            ["Log_CatalogDone"] = "Catalog parsed: {0} Addressables bundles",
             ["Log_CatalogFailed"] = "Failed to load catalog: {0}",
+            ["Log_DownloadingGrMap"] = "Downloading GRMap: {0}",
+            ["Log_GrMapDone"] = "GRMap parsed: {0} old assets, XOR decrypted to {1}",
+            ["Log_GrMapFailed"] = "GRMap download/parse failed: {0}",
             ["Log_StartDownload"] = "Starting download of {0} items to {1}",
             ["Log_DownloadDone"] = "Done: success {0}, skipped (exists) {1}, failed {2}",
             ["Log_Cancelled"] = "Cancelled",
@@ -106,6 +111,7 @@ public static class Loc
             ["Log_FailAllVersions"] = "Failed (not found in any version directory): {0}",
             ["Log_FromOldDir"] = "Fetched from older directory: {0}  <- {1}",
             ["Log_Error"] = "Error {0}: {1}",
+            ["Log_DecryptError"] = "Decrypt failed {0}: {1}",
             ["Lang_JP"] = "日本語",
             ["Lang_ZH"] = "繁體中文",
             ["Lang_EN"] = "English",
