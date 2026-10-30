@@ -3,6 +3,8 @@ using AoOniOnlineResDownloader;
 public class MainForm : Form
 {
     readonly ComboBox cmbLanguage = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
+    readonly ComboBox cmbGame = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
+    readonly Label lblGame = new() { AutoSize = true, Padding = new Padding(10, 6, 0, 0), Text = "遊戲" };
     readonly ComboBox cmbVersion = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     readonly Button btnReload = new() { AutoSize = true };
     readonly Button btnCatalog = new() { AutoSize = true, Enabled = false };
@@ -14,6 +16,8 @@ public class MainForm : Form
     readonly Button btnDownload = new() { AutoSize = true, Enabled = false };
     readonly Button btnDownloadAll = new() { AutoSize = true, Enabled = false };
     readonly Button btnCancel = new() { AutoSize = true, Enabled = false };
+    readonly Button btnOpenFolder = new() { AutoSize = true, Text = "開啟資料夾" };
+    string? lastOutDir; // 最近一次載入 / 下載的版本資料夾
     readonly Label lblInfo = new() { AutoSize = true, Padding = new Padding(6, 6, 0, 0) };
     readonly ProgressBar bar = new() { Dock = DockStyle.Bottom, Height = 18 };
     readonly TextBox txtLog = new() { Dock = DockStyle.Bottom, Height = 130, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical };
@@ -65,8 +69,27 @@ public class MainForm : Form
             ApplyLanguage();
         };
 
+        // 遊戲下拉選單（顯示 GameProfile.Name）
+        cmbGame.DataSource = Core.Profiles;
+        cmbGame.SelectedItem = Core.Current;
+        cmbGame.SelectionChangeCommitted += async (_, _) =>
+        {
+            Core.Current = (GameProfile)cmbGame.SelectedItem!;
+
+            // 清掉上一個遊戲的資料，避免誤下載到錯的遊戲
+            allBundles = new();
+            loadedVersion = null;
+            lstBundles.Items.Clear();
+            cmbVersion.DataSource = null;
+            btnCatalog.Enabled = false;
+            btnDownload.Enabled = btnDownloadAll.Enabled = false;
+            UpdateInfo();
+
+            await ReloadVersionsAsync();
+        };
+
         var row0 = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, Padding = new Padding(4) };
-        row0.Controls.AddRange(new Control[] { lblLanguage, cmbLanguage });
+        row0.Controls.AddRange(new Control[] { lblLanguage, cmbLanguage, lblGame, cmbGame });
 
         var row1 = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, Padding = new Padding(4) };
         row1.Controls.AddRange(new Control[] { lblVersion, cmbVersion, btnReload, btnCatalog });
@@ -75,7 +98,7 @@ public class MainForm : Form
         row2.Controls.AddRange(new Control[] { lblOutput, txtOut, btnBrowse, lblParallel, numParallel });
 
         var row3 = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, Padding = new Padding(4) };
-        row3.Controls.AddRange(new Control[] { txtFilter, btnDownloadAll, btnDownload, btnCancel, lblInfo });
+        row3.Controls.AddRange(new Control[] { txtFilter, btnDownloadAll, btnDownload, btnCancel, btnOpenFolder, lblInfo });
 
         Controls.Add(lstBundles);
         Controls.Add(row3);
@@ -99,7 +122,24 @@ public class MainForm : Form
         btnDownload.Click += async (_, _) => await DownloadAsync(false);
         btnDownloadAll.Click += async (_, _) => await DownloadAsync(true);
         btnCancel.Click += (_, _) => cts?.Cancel();
+        btnOpenFolder.Click += (_, _) => OpenOutputFolder();
         lstBundles.SelectedIndexChanged += (_, _) => UpdateInfo();
+    }
+
+    // 開啟下載位置：有載入 / 下載過就開該版本資料夾，否則開輸出根目錄
+    void OpenOutputFolder()
+    {
+        string dir = lastOutDir ?? Path.Combine(txtOut.Text, Core.Current.Name);
+        try
+        {
+            Directory.CreateDirectory(dir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = dir,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex) { Log($"無法開啟資料夾 {dir}：{ex.Message}"); }
     }
 
     void ApplyLanguage()
@@ -146,12 +186,18 @@ public class MainForm : Form
         try
         {
             btnCatalog.Enabled = false;
-            string dir = Path.Combine(txtOut.Text, v.AndroidRes);
+            string dir = Path.Combine(txtOut.Text, Core.Current.Name, v.AndroidRes);
+            lastOutDir = dir;
 
-            Log(Loc.Tf("Log_DownloadingCatalog", v.AndroidRes));
-            byte[] cat = await Core.FetchCatalogAsync(v.AndroidRes, dir);
-            var addrList = Core.ParseBundleNames(cat);
-            Log(Loc.Tf("Log_CatalogDone", addrList.Count));
+            // 有些遊戲（例如 X版）沒有 Addressables catalog，只有 GRMap，直接跳過
+            List<string> addrList = new();
+            if (Core.Current.HasCatalog)
+            {
+                Log(Loc.Tf("Log_DownloadingCatalog", v.AndroidRes));
+                byte[] cat = await Core.FetchCatalogAsync(v.AndroidRes, dir);
+                addrList = Core.ParseBundleNames(cat);
+                Log(Loc.Tf("Log_CatalogDone", addrList.Count));
+            }
 
             List<string> grList = new();
             try
@@ -197,13 +243,15 @@ public class MainForm : Form
         var names = (all ? lstBundles.Items.Cast<string>() : lstBundles.SelectedItems.Cast<string>()).ToList();
         if (names.Count == 0) return;
 
-        string outAddr = Path.Combine(txtOut.Text, v.AndroidRes, "Addressables");
-        string outOld = Path.Combine(txtOut.Text, v.AndroidRes, "AssetBundles");
+        lastOutDir = Path.Combine(txtOut.Text, Core.Current.Name, v.AndroidRes);
+        string outAddr = Path.Combine(txtOut.Text, Core.Current.Name, v.AndroidRes, "Addressables");
+        string outOld = Path.Combine(txtOut.Text, Core.Current.Name, v.AndroidRes, "AssetBundles");
 
         cts = new CancellationTokenSource();
         btnDownload.Enabled = btnDownloadAll.Enabled = false;
         btnCancel.Enabled = true;
         btnCatalog.Enabled = false;
+        cmbGame.Enabled = false;
         bar.Maximum = names.Count;
         bar.Value = 0;
 
@@ -228,6 +276,7 @@ public class MainForm : Form
             btnDownload.Enabled = btnDownloadAll.Enabled = true;
             btnCancel.Enabled = false;
             btnCatalog.Enabled = true;
+            cmbGame.Enabled = true;
         }
     }
 }

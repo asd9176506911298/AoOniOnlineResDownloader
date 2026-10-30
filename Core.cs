@@ -9,18 +9,37 @@ public record ResourceVersion(int Id, string AppVersion, string IosRes, string A
     public override string ToString() => $"{AppVersion}    [{AndroidRes}]";
 }
 
+// HasCatalog = false：該遊戲沒有 Addressables catalog，只有 GRMap（例如 X版）
+public record GameProfile(string Name, string VersionListUrl, string ResRootUrl, bool HasCatalog = true)
+{
+    // ComboBox 會用 ToString() 顯示文字
+    public override string ToString() => Name;
+}
+
 public static class Core
 {
-    public const string BaseUrl = "https://diz1jo2c4y7pn.cloudfront.net/prd/";
-    public static string AddressablesUrl(string resVersion) => $"{BaseUrl}res/{resVersion}/Android/Addressables/";
-    public static string AndroidRootUrl(string resVersion) => $"{BaseUrl}res/{resVersion}/Android/";
+    public static string AddressablesUrl(string resVersion) => $"{Current.ResRootUrl}{resVersion}/Android/Addressables/";
+    public static string AndroidRootUrl(string resVersion) => $"{Current.ResRootUrl}{resVersion}/Android/";
     public static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
     static readonly Regex BundleRx = new(@"[A-Za-z0-9_.\-]+_assets_all_[0-9a-f]{32}\.bundle", RegexOptions.Compiled);
     static readonly Regex GrMapEntryRx = new(@"\""([^\""]+)\""\s*:\s*\""([0-9A-Fa-f]+),(\d+)\""", RegexOptions.Compiled);
 
+    public static readonly GameProfile[] Profiles =
+    {
+        new("AoOniOnline",
+            "https://diz1jo2c4y7pn.cloudfront.net/prd/version.json.encrypted.zip",
+            "https://diz1jo2c4y7pn.cloudfront.net/prd/res/"),
+        new("AoOniX",
+            "https://ds7m55ta9fqy6.cloudfront.net/master/prd/version.json.encrypted.zip",
+            "https://ds7m55ta9fqy6.cloudfront.net/resources/prd/",
+            HasCatalog: false),
+    };
+
+    public static GameProfile Current { get; set; } = Profiles[0];
+
     public static async Task<List<ResourceVersion>> FetchVersionsAsync(Action<string> log)
     {
-        string url = BaseUrl + "version.json.encrypted.zip";
+        string url = Current.VersionListUrl;
         log(Loc.Tf("Log_Downloading", url));
         byte[] zipBytes = await Http.GetByteArrayAsync(url).ConfigureAwait(false);
         using var zip = new ZipArchive(new MemoryStream(zipBytes), ZipArchiveMode.Read);
@@ -33,22 +52,48 @@ public static class Core
         return ParseVersions(json);
     }
 
+    // 支援兩種格式：
+    //   O版: gameMaster.released_resource = [ {key_0..key_3}, ... ]（前 2 筆是表頭）
+    //   X版: gameMaster.resource_info     = [ [欄位名], [型別], [id, app_version, ios_res, android_res], ... ]
     public static List<ResourceVersion> ParseVersions(string json)
     {
         using var doc = JsonDocument.Parse(json);
-        var rr = doc.RootElement.GetProperty("gameMaster").GetProperty("released_resource");
+        var gm = doc.RootElement.GetProperty("gameMaster");
         var list = new List<ResourceVersion>();
-        int n = 0;
-        foreach (var e in rr.EnumerateArray())
+
+        if (gm.TryGetProperty("released_resource", out var rr))
         {
-            if (n++ < 2) continue;
-            list.Add(new ResourceVersion(
-                e.GetProperty("key_0").GetInt32(),
-                Str(e.GetProperty("key_1")),
-                Str(e.GetProperty("key_2")),
-                Str(e.GetProperty("key_3"))));
+            int n = 0;
+            foreach (var e in rr.EnumerateArray())
+            {
+                if (n++ < 2) continue;
+                list.Add(new ResourceVersion(
+                    e.GetProperty("key_0").GetInt32(),
+                    Str(e.GetProperty("key_1")),
+                    Str(e.GetProperty("key_2")),
+                    Str(e.GetProperty("key_3"))));
+            }
+            return list;
         }
-        return list;
+
+        if (gm.TryGetProperty("resource_info", out var ri))
+        {
+            foreach (var e in ri.EnumerateArray())
+            {
+                // 跳過表頭（欄位名、型別）：資料列的第 0 欄一定是數字 id
+                if (e.ValueKind != JsonValueKind.Array || e.GetArrayLength() < 4) continue;
+                if (e[0].ValueKind != JsonValueKind.Number) continue;
+                list.Add(new ResourceVersion(
+                    e[0].GetInt32(),
+                    Str(e[1]),
+                    Str(e[2]),
+                    Str(e[3])));
+            }
+            return list;
+        }
+
+        var keys = string.Join(", ", gm.EnumerateObject().Select(p => p.Name));
+        throw new InvalidDataException($"找不到版本清單（released_resource / resource_info），gameMaster 內有：{keys}");
     }
 
     static string Str(JsonElement e) => e.ValueKind == JsonValueKind.String ? e.GetString() ?? "" : e.GetRawText();
@@ -104,14 +149,21 @@ public static class Core
         return BundleRx.Matches(text).Select(m => m.Value).Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
     }
 
-    // GRMap: 前 0x31 bytes XOR 固定 key 0x69
+    // GRMap: 前 0x31 bytes XOR 單一 byte key（O版 0x69、X版 0x33）。
+    // 明文一定是 JSON，第一個字元是 '{'、第二個是 '"'，所以 key = data[0] ^ '{' 可自動推得。
     public static void XorDecryptGrMap(string filePath)
     {
         byte[] data = File.ReadAllBytes(filePath);
         if (data.Length == 0) return;
+        if (data[0] == (byte)'{') return; // 已是明文
+
+        byte key = (byte)(data[0] ^ (byte)'{');
+        if (data.Length > 1 && (byte)(data[1] ^ key) != (byte)'"')
+            key = 0x69; // 推不出來就退回舊版固定 key
+
         int xorCount = Math.Min(0x31, data.Length);
         for (int i = 0; i < xorCount; i++)
-            data[i] ^= 0x69;
+            data[i] ^= key;
         File.WriteAllBytes(filePath, data);
     }
 
@@ -147,9 +199,24 @@ public static class Core
         if (data.Length >= 1 && data[0] == (byte)'{')
             return;
 
+        byte[] orig = (byte[])data.Clone();
         DeHoge(data, hogeInt: 0x7B);
+
+        // 如果 DeHoge 解出來不是 UnityFS / JSON，改用「第一個 byte 對應 'U'」自動推 key 再試一次
+        if (!LooksPlain(data))
+        {
+            byte key = (byte)(orig[0] ^ (byte)'U');
+            int n = Math.Min(0x31, orig.Length);
+            var alt = (byte[])orig.Clone();
+            for (int i = 0; i < n; i++) alt[i] ^= key;
+            if (LooksPlain(alt)) data = alt;
+        }
         File.WriteAllBytes(filePath, data);
     }
+
+    static bool LooksPlain(byte[] d) =>
+        (d.Length >= 5 && d[0] == (byte)'U' && d[1] == (byte)'n' && d[2] == (byte)'i' && d[3] == (byte)'t' && d[4] == (byte)'y')
+        || (d.Length >= 1 && d[0] == (byte)'{');
 
     public static async Task<List<string>> FetchAndParseGrMapAsync(string resVersion, string saveDir, Action<string> log)
     {
